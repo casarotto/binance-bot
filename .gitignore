@@ -1,0 +1,43 @@
+# Binários compilados e arquivos temporários
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Arquivos de debug
+debug/
+
+# Diretório de dependências
+/vendor/
+
+# Arquivos de ambiente
+.env
+.env.local
+.env.*.local
+
+# Diretório de build
+/bin/
+/dist/
+
+# Go workspace file
+go.work
+
+# Arquivos de IDE e editores
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Arquivos de log
+*.log
+
+# Diretório de cache do Go
+/go/
+
+# Arquivos de cobertura de testes
+coverage.txt
+coverage.html
