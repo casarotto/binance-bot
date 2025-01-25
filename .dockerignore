@@ -1,0 +1,13 @@
+# Arquivos de desenvolvimento
+.git
+.gitignore
+.env
+README.md
+
+# Diretórios
+history/
+vendor/
+
+# Binários
+bot
+*.exe 

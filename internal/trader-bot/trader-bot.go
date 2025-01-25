@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"sync"
@@ -37,6 +38,7 @@ type BTCTrader struct {
     tradeHistory []Trade        // Histórico de trades
     historyFile  string         // Nome do arquivo para salvar histórico
     historyMutex sync.Mutex     // Mutex para proteger o acesso ao histórico
+    logger      *Logger         // Logger personalizado
 }
 
 type InitialPosition struct {
@@ -52,6 +54,14 @@ func (t *BTCTrader) loadCurrentPosition() error {
         return fmt.Errorf("erro ao buscar informações da conta: %v", err)
     }
 
+    // Verificar última operação no histórico
+    t.historyMutex.Lock()
+    var lastAction string
+    if len(t.tradeHistory) > 0 {
+        lastAction = t.tradeHistory[len(t.tradeHistory)-1].Action
+    }
+    t.historyMutex.Unlock()
+
     // Procurar por BTC nos balanços
     for _, balance := range account.Balances {
         if balance.Asset == "BTC" {
@@ -60,8 +70,8 @@ func (t *BTCTrader) loadCurrentPosition() error {
                 return fmt.Errorf("erro ao converter saldo BTC: %v", err)
             }
 
-            // Se tiver BTC, precisamos buscar o preço médio de compra
-            if free > 0 {
+            // Se tiver BTC E a última operação não foi uma venda, estamos em posição
+            if free > 0 && lastAction != "sell" {
                 // Buscar trades recentes para encontrar o preço médio
                 trades, err := t.client.NewListTradesService().
                     Symbol("BTCUSDT").
@@ -90,6 +100,11 @@ func (t *BTCTrader) loadCurrentPosition() error {
                     log.Printf("Posição existente detectada - Quantidade: %.8f BTC, Preço de entrada: $%.2f", 
                         free, lastBuyPrice)
                 }
+            } else {
+                t.inPosition = false
+                delete(t.positions, "BTC")
+                log.Printf("Saldo BTC: %.8f, Última ação: %s - Considerado fora de posição", 
+                    free, lastAction)
             }
             break
         }
@@ -158,51 +173,63 @@ func (t *BTCTrader) addTradeToHistory(trade Trade) {
     go t.saveTradeHistory()
 }
 
+func (t *BTCTrader) log(format string, v ...interface{}) {
+	if t.logger != nil {
+		t.logger.Printf(format, v...)
+	}
+}
+
+func (t *BTCTrader) logImportant(format string, v ...interface{}) {
+	if t.logger != nil {
+		t.logger.LogImportant(format, v...)
+	}
+}
+
 func (t *BTCTrader) calculateRSI() float64 {
-    // Precisamos de pelo menos rsiPeriod + 1 preços para calcular o RSI
-    if len(t.prices) <= t.rsiPeriod+1 {
-        log.Printf("RSI: Dados insuficientes. Precisamos de %d preços, temos %d", t.rsiPeriod+1, len(t.prices))
-        return 50.0 // Valor neutro até termos dados suficientes
-    }
+	// Precisamos de pelo menos rsiPeriod + 1 preços para calcular o RSI
+	if len(t.prices) <= t.rsiPeriod+1 {
+		t.log("RSI: Dados insuficientes. Precisamos de %d preços, temos %d", t.rsiPeriod+1, len(t.prices))
+		return 50.0 // Valor neutro até termos dados suficientes
+	}
 
-    var gains, losses float64
-    for i := 1; i < t.rsiPeriod+1; i++ {
-        if len(t.prices)-i-1 < 0 {
-            log.Printf("RSI: Índice inválido detectado no cálculo")
-            return 50.0 // Proteção adicional contra índices negativos
-        }
-        change := t.prices[len(t.prices)-i] - t.prices[len(t.prices)-i-1]
-        if change >= 0 {
-            gains += change
-        } else {
-            losses -= change
-        }
-    }
+	var gains, losses float64
+	for i := 1; i < t.rsiPeriod+1; i++ {
+		if len(t.prices)-i-1 < 0 {
+			t.log("RSI: Índice inválido detectado no cálculo")
+			return 50.0 // Proteção adicional contra índices negativos
+		}
+		change := t.prices[len(t.prices)-i] - t.prices[len(t.prices)-i-1]
+		if change >= 0 {
+			gains += change
+		} else {
+			losses -= change
+		}
+	}
 
-    if losses == 0 {
-        log.Printf("RSI: Nenhuma perda detectada, RSI = 100")
-        return 100.0
-    }
+	if losses == 0 {
+		t.log("RSI: Nenhuma perda detectada, RSI = 100")
+		return 100.0
+	}
 
-    rs := gains / losses
-    rsi := 100.0 - (100.0 / (1.0 + rs))
-    log.Printf("RSI calculado: %.2f (Gains: %.2f, Losses: %.2f)", rsi, gains, losses)
-    return rsi
+	rs := gains / losses
+	rsi := 100.0 - (100.0 / (1.0 + rs))
+	t.log("RSI calculado: %.2f (Gains: %.2f, Losses: %.2f)", rsi, gains, losses)
+	return rsi
 }
 
 func (t *BTCTrader) calculateMA(period int) float64 {
-    if len(t.prices) < period {
-        log.Printf("MA%d: Dados insuficientes. Precisamos de %d preços, temos %d", period, period, len(t.prices))
-        return 0
-    }
+	if len(t.prices) < period {
+		t.log("MA%d: Dados insuficientes. Precisamos de %d preços, temos %d", period, period, len(t.prices))
+		return 0
+	}
 
-    sum := 0.0
-    for i := 0; i < period; i++ {
-        sum += t.prices[len(t.prices)-1-i]
-    }
-    ma := sum / float64(period)
-    log.Printf("MA%d calculada: %.2f", period, ma)
-    return ma
+	sum := 0.0
+	for i := 0; i < period; i++ {
+		sum += t.prices[len(t.prices)-1-i]
+	}
+	ma := sum / float64(period)
+	t.log("MA%d calculada: %.2f", period, ma)
+	return ma
 }
 
 // Calcula o preço mínimo de venda necessário para lucro considerando as taxas
@@ -214,22 +241,26 @@ func (t *BTCTrader) calculateMinProfitablePrice(entryPrice float64) float64 {
     return entryPrice * (1 + totalFees + minProfitMargin)
 }
 
+// hasEnoughData verifica se há dados suficientes para calcular todos os indicadores
+func (t *BTCTrader) hasEnoughData() bool {
+    return len(t.prices) > t.maLong && len(t.prices) > t.rsiPeriod+1
+}
+
 func (t *BTCTrader) shouldTrade(price float64) (string, bool) {
-    log.Printf("\n=== Nova análise de trading ===")
-    log.Printf("Preço atual: $%.2f", price)
+    t.log("\n=== Nova análise de trading ===")
+    t.log("Preço atual: $%.2f", price)
     
     // Adicionar novo preço ao histórico
     t.prices = append(t.prices, price)
     if len(t.prices) > 100 { // Manter histórico limitado
         t.prices = t.prices[1:]
     }
-    log.Printf("Total de preços no histórico: %d", len(t.prices))
 
     // Verificar se temos dados suficientes para todos os indicadores
-    minDataRequired := t.maLong // MA longa é o indicador que precisa de mais dados
-    if len(t.prices) < minDataRequired {
-        log.Printf("⏳ Aguardando dados suficientes para todos os indicadores (necessário: %d, atual: %d)", 
-            minDataRequired, len(t.prices))
+    if !t.hasEnoughData() {
+        t.log("Aguardando dados suficientes para indicadores (MA21: %d/%d, RSI: %d/%d)",
+            len(t.prices), t.maLong,
+            len(t.prices), t.rsiPeriod+1)
         return "", false
     }
 
@@ -240,48 +271,30 @@ func (t *BTCTrader) shouldTrade(price float64) (string, bool) {
 
     // Se algum indicador retornou valor neutro/inválido, não operar
     if rsi == 50.0 || maShort == 0 || maLong == 0 {
-        log.Printf("⚠️ Indicadores ainda não estão prontos para operar")
         return "", false
     }
 
-    log.Printf("Status atual: %s", map[bool]string{true: "Em posição", false: "Fora do mercado"}[t.inPosition])
-
     // Regras de Trading
     if !t.inPosition {
-        log.Printf("Analisando sinais de COMPRA...")
-        log.Printf("Condições: RSI < 30 (atual: %.2f) E MA%d > MA%d (%.2f > %.2f)", 
-            rsi, t.maShort, t.maLong, maShort, maLong)
-        
         if rsi < 30 && maShort > maLong {
-            log.Printf("✅ Sinal de COMPRA gerado!")
+            t.logImportant("✅ Sinal de COMPRA - RSI: %.2f, MA9: %.2f, MA21: %.2f", rsi, maShort, maLong)
             return "buy", true
         }
     } else {
-        log.Printf("Analisando sinais de VENDA...")
         entryPrice := t.positions["BTC"]
-        minProfitPrice := t.calculateMinProfitablePrice(entryPrice)
+        currentProfit := (price - entryPrice) / entryPrice * 100
         
-        log.Printf("Preço de entrada: $%.2f", entryPrice)
-        log.Printf("Preço mínimo para lucro (incluindo taxas): $%.2f", minProfitPrice)
-        log.Printf("Lucro potencial atual: %.2f%%", (price-entryPrice)/entryPrice*100)
-
-        // Primeiro verifica se o preço atual permite lucro
-        if price < minProfitPrice {
-            log.Printf("⏳ Aguardando preço lucrativo (atual: $%.2f, necessário: $%.2f)", price, minProfitPrice)
+        if price < t.calculateMinProfitablePrice(entryPrice) {
             return "", false
         }
 
-        log.Printf("Condições: RSI > 70 (atual: %.2f) OU (MA%d < MA%d (%.2f < %.2f) E RSI > 50)", 
-            rsi, t.maShort, t.maLong, maShort, maLong)
-        
-        // Vende se tiver sinal técnico E o preço permitir lucro
-        if rsi > 70 || (maShort < maLong && rsi > 50) {
-            log.Printf("✅ Sinal de VENDA gerado!")
+        if (rsi > 70 || (maShort < maLong && rsi > 50)) && currentProfit >= 0.3 {
+            t.logImportant("✅ Sinal de VENDA - RSI: %.2f, MA9: %.2f, MA21: %.2f, Lucro: %.2f%%", 
+                rsi, maShort, maLong, currentProfit)
             return "sell", true
         }
     }
 
-    log.Printf("❌ Nenhum sinal de trading gerado")
     return "", false
 }
 
@@ -294,13 +307,9 @@ func (t *BTCTrader) checkStopLoss(currentPrice float64) bool {
     stopLossPercent := 0.02 // 2% stop loss
     stopLossPrice := entryPrice * (1 - stopLossPercent)
 
-    log.Printf("=== Verificação de Stop Loss ===")
-    log.Printf("Preço de entrada: $%.2f", entryPrice)
-    log.Printf("Preço atual: $%.2f", currentPrice)
-    log.Printf("Preço do Stop Loss: $%.2f", stopLossPrice)
-
     if currentPrice < stopLossPrice {
-        log.Printf("⚠️ Stop Loss atingido! Perda: %.2f%%", (currentPrice-entryPrice)/entryPrice*100)
+        loss := (currentPrice-entryPrice)/entryPrice*100
+        t.logImportant("⚠️ Stop Loss atingido! Perda: %.2f%%", loss)
         return true
     }
 
@@ -343,6 +352,7 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
             Do(context.Background())
             
         if err != nil {
+            t.logImportant("❌ Erro ao executar compra: %v", err)
             return err
         }
         
@@ -352,7 +362,7 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
         // Buscar saldos atualizados
         btcBalance, usdtBalance, err := t.getBalances()
         if err != nil {
-            log.Printf("Aviso: Não foi possível obter saldos atualizados: %v", err)
+            t.log("Aviso: Não foi possível obter saldos atualizados: %v", err)
         }
 
         // Registrar trade no histórico
@@ -366,9 +376,9 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
         }
         t.addTradeToHistory(trade)
         
-        log.Printf("Compra executada: Preço: %.2f, Quantidade: %.5f", price, quantity)
-        log.Printf("Saldos após compra - BTC: %.8f, USDT: %.2f", btcBalance, usdtBalance)
-        log.Printf("Ordem: %+v", order)
+        t.logImportant("💰 Compra executada - Preço: $%.2f, Quantidade: %.5f BTC", price, quantity)
+        t.log("Saldos após compra - BTC: %.8f, USDT: %.2f", btcBalance, usdtBalance)
+        t.log("Ordem: %+v", order)
         
     } else if action == "sell" {
         order, err := t.client.NewCreateOrderService().
@@ -379,6 +389,7 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
             Do(context.Background())
             
         if err != nil {
+            t.logImportant("❌ Erro ao executar venda: %v", err)
             return err
         }
         
@@ -392,7 +403,7 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
         // Buscar saldos atualizados
         btcBalance, usdtBalance, err := t.getBalances()
         if err != nil {
-            log.Printf("Aviso: Não foi possível obter saldos atualizados: %v", err)
+            t.log("Aviso: Não foi possível obter saldos atualizados: %v", err)
         }
 
         // Registrar trade no histórico
@@ -407,19 +418,35 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
         }
         t.addTradeToHistory(trade)
         
-        log.Printf("Venda executada: Preço: %.2f, Quantidade: %.5f, Lucro/Prejuízo: %.2f%%", 
+        t.logImportant("💰 Venda executada - Preço: $%.2f, Quantidade: %.5f BTC, Lucro: %.2f%%", 
             price, quantity, profitLoss)
-        log.Printf("Saldos após venda - BTC: %.8f, USDT: %.2f", btcBalance, usdtBalance)
-        log.Printf("Ordem: %+v", order)
+        t.log("Saldos após venda - BTC: %.8f, USDT: %.2f", btcBalance, usdtBalance)
+        t.log("Ordem: %+v", order)
     }
     
     return nil
 }
 
 func (t *BTCTrader) calculateTradeQuantity(price float64) float64 {
+    // Valor mínimo da ordem na Binance (10 USDT)
+    minOrderValue := 10.0
+
+    // Calcular quantidade baseada no risco
     riskPerTrade := 0.02 // 2% do capital disponível por trade
     tradeAmount := t.funds * riskPerTrade
-    return tradeAmount / price
+
+    // Garantir que o valor da ordem seja pelo menos o mínimo
+    if tradeAmount < minOrderValue {
+        tradeAmount = minOrderValue
+    }
+
+    // Calcular quantidade
+    quantity := tradeAmount / price
+
+    // Arredondar para 5 casas decimais (padrão da Binance para BTC)
+    quantity = math.Floor(quantity*100000) / 100000
+
+    return quantity
 }
 
 func (t *BTCTrader) Start() error {
@@ -428,7 +455,7 @@ func (t *BTCTrader) Start() error {
         
         // Verificar stop loss
         if t.checkStopLoss(price) {
-            log.Println("Stop Loss atingido!")
+            t.logImportant("Stop Loss atingido! Executando venda...")
             t.executeTrade("sell", price)
             return
         }
@@ -436,23 +463,41 @@ func (t *BTCTrader) Start() error {
         // Verificar sinais de trading
         action, shouldTrade := t.shouldTrade(price)
         if shouldTrade {
+            t.logImportant("Executando %s...", action)
             err := t.executeTrade(action, price)
             if err != nil {
-                log.Printf("Erro ao executar %s: %v", action, err)
+                t.logImportant("❌ Erro ao executar %s: %v", action, err)
             }
         }
     }
 
     errHandler := func(err error) {
-        log.Printf("Erro no WebSocket: %v", err)
+        t.logImportant("❌ Erro no WebSocket: %v", err)
     }
 
     // Iniciar WebSocket para BTCUSDT com intervalo de 1 minuto
-    _, _, err := binance.WsKlineServe("BTCUSDT", "1m", wsHandler, errHandler)
+    _, _, err := binance.WsKlineServe("BTCUSDT", "1s", wsHandler, errHandler)
     if err != nil {
-        return err
+        return fmt.Errorf("erro ao iniciar WebSocket: %v", err)
     }
 
     // Manter o bot rodando
     select {}
+}
+
+// SetInitialPosition configura a posição inicial do trader
+func (t *BTCTrader) SetInitialPosition(inPosition bool, entryPrice float64) {
+    t.inPosition = inPosition
+    if inPosition {
+        t.positions["BTC"] = entryPrice
+        t.logImportant("Posição inicial configurada - Em posição com entrada em $%.2f", entryPrice)
+    } else {
+        delete(t.positions, "BTC")
+        t.logImportant("Posição inicial configurada - Fora do mercado")
+    }
+}
+
+// GetClient retorna o cliente da Binance
+func (t *BTCTrader) GetClient() *binance.Client {
+    return t.client
 }

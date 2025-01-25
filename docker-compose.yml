@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: binance-trading-bot
+    volumes:
+      - ./.env:/app/.env
+      - ./history:/app/history
+    environment:
+      - TZ=America/Sao_Paulo
+      - TERM=xterm-256color
+    tty: true
+    stdin_open: true
+    restart: unless-stopped 
