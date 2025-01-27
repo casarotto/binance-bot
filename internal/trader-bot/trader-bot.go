@@ -428,8 +428,8 @@ func (t *BTCTrader) executeTrade(action string, price float64) error {
 }
 
 func (t *BTCTrader) calculateTradeQuantity(price float64) float64 {
-    // Valor mínimo da ordem na Binance (10 USDT)
-    minOrderValue := 10.0
+    // Valor mínimo da ordem na Binance (11 USDT para garantir)
+    minOrderValue := 11.0
 
     // Calcular quantidade baseada no risco
     riskPerTrade := 0.02 // 2% do capital disponível por trade
@@ -440,11 +440,29 @@ func (t *BTCTrader) calculateTradeQuantity(price float64) float64 {
         tradeAmount = minOrderValue
     }
 
+    // Se o saldo disponível for menor que o valor mínimo, usar todo o saldo
+    _, usdtBalance, err := t.getBalances()
+    if err == nil && !t.inPosition && usdtBalance < tradeAmount {
+        tradeAmount = usdtBalance
+    }
+
+    // Se mesmo assim o valor for menor que o mínimo, não executar
+    if tradeAmount < minOrderValue {
+        t.logImportant("⚠️ Saldo insuficiente para atingir o valor mínimo de ordem (%.2f USDT)", minOrderValue)
+        return 0
+    }
+
     // Calcular quantidade
     quantity := tradeAmount / price
 
     // Arredondar para 5 casas decimais (padrão da Binance para BTC)
     quantity = math.Floor(quantity*100000) / 100000
+
+    // Verificar se o valor total da ordem atende ao mínimo
+    if quantity * price < minOrderValue {
+        t.logImportant("⚠️ Valor total da ordem (%.2f USDT) abaixo do mínimo permitido (%.2f USDT)", quantity * price, minOrderValue)
+        return 0
+    }
 
     return quantity
 }
