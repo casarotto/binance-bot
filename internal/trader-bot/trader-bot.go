@@ -39,6 +39,7 @@ type BTCTrader struct {
     historyFile  string         // Nome do arquivo para salvar histórico
     historyMutex sync.Mutex     // Mutex para proteger o acesso ao histórico
     logger      *Logger         // Logger personalizado
+    lastBuyQuantity float64    // Quantidade da última compra
 }
 
 type InitialPosition struct {
@@ -292,7 +293,10 @@ func (t *BTCTrader) shouldTrade(price float64) (string, bool) {
         }
     } else {
         entryPrice := t.positions["BTC"]
-        currentProfit := (price - entryPrice) / entryPrice * 100
+        // Calcular lucro considerando a quantidade correta
+        entryValue := entryPrice * t.lastBuyQuantity
+        currentValue := price * t.lastBuyQuantity
+        currentProfit := (currentValue - entryValue) / entryValue * 100
         
         if price < t.calculateMinProfitablePrice(entryPrice) {
             return "", false
@@ -351,7 +355,19 @@ func (t *BTCTrader) getBalances() (btcBalance, usdtBalance float64, err error) {
 }
 
 func (t *BTCTrader) executeTrade(action string, price float64) error {
-    quantity := t.calculateTradeQuantity(price)
+    var quantity float64
+    
+    if action == "buy" {
+        quantity = t.calculateTradeQuantity(price)
+        t.lastBuyQuantity = quantity // Armazena a quantidade comprada
+    } else {
+        quantity = t.lastBuyQuantity // Usa a mesma quantidade da última compra
+    }
+    
+    if quantity == 0 {
+        t.logImportant("❌ Quantidade inválida para %s", action)
+        return fmt.Errorf("quantidade inválida")
+    }
     
     if action == "buy" {
         order, err := t.client.NewCreateOrderService().
