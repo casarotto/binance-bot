@@ -250,6 +250,16 @@ func (t *BTCTrader) shouldTrade(price float64) (string, bool) {
     t.log("\n=== Nova análise de trading ===")
     t.log("Preço atual: $%.2f", price)
     
+    // Validação do preço - ignorar valores muito discrepantes (±30% do último preço)
+    if len(t.prices) > 0 {
+        lastPrice := t.prices[len(t.prices)-1]
+        priceChange := math.Abs((price - lastPrice) / lastPrice * 100)
+        if priceChange > 30 {
+            t.logImportant("⚠️ Preço ignorado por estar muito discrepante (%.2f%% de variação)", priceChange)
+            return "", false
+        }
+    }
+    
     // Adicionar novo preço ao histórico
     t.prices = append(t.prices, price)
     if len(t.prices) > 100 { // Manter histórico limitado
