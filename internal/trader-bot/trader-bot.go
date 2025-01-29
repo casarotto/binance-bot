@@ -40,6 +40,7 @@ type BTCTrader struct {
     historyMutex sync.Mutex     // Mutex para proteger o acesso ao histórico
     logger      *Logger         // Logger personalizado
     lastBuyQuantity float64    // Quantidade da última compra
+    riskPerTrade   float64     // Porcentagem do capital a ser investido por trade (vem do .env)
 }
 
 type InitialPosition struct {
@@ -118,20 +119,42 @@ func (t *BTCTrader) loadCurrentPosition() error {
     return nil
 }
 
-func NewBTCTrader(apiKey, apiSecret string, initialFunds float64, testnet bool, historyFile string) *BTCTrader {
+func NewBTCTrader(apiKey, apiSecret string, testnet bool, historyFile string, riskPerTrade float64) *BTCTrader {
     binance.UseTestnet = testnet
+    client := binance.NewClient(apiKey, apiSecret)
+    
     trader := &BTCTrader{
-        client:      binance.NewClient(apiKey, apiSecret),
+        client:      client,
         prices:      make([]float64, 0),
         positions:   make(map[string]float64),
         rsiPeriod:   14,
         maShort:     9,
         maLong:      21,
-        funds:       initialFunds,
         inPosition:  false,
         takerFee:    0.001, // 0.1% por operação
         historyFile: historyFile,
         tradeHistory: make([]Trade, 0),
+        riskPerTrade: riskPerTrade,
+    }
+
+    // Buscar saldo inicial da conta
+    account, err := client.NewGetAccountService().Do(context.Background())
+    if err != nil {
+        log.Printf("Erro ao buscar saldo inicial: %v", err)
+        trader.funds = 0
+    } else {
+        // Procurar saldo em USDT
+        for _, balance := range account.Balances {
+            if balance.Asset == "USDT" {
+                trader.funds, err = strconv.ParseFloat(balance.Free, 64)
+                if err != nil {
+                    log.Printf("Erro ao converter saldo USDT: %v", err)
+                    trader.funds = 0
+                }
+                log.Printf("Saldo inicial carregado: %.2f USDT", trader.funds)
+                break
+            }
+        }
     }
 
     // Carregar histórico existente se o arquivo existir
@@ -457,9 +480,8 @@ func (t *BTCTrader) calculateTradeQuantity(price float64) float64 {
     // Valor mínimo da ordem na Binance (11 USDT para garantir)
     minOrderValue := 11.0
 
-    // Calcular quantidade baseada no risco
-    riskPerTrade := 0.02 // 2% do capital disponível por trade
-    tradeAmount := t.funds * riskPerTrade
+    // Calcular quantidade baseada no risco definido no .env
+    tradeAmount := t.funds * t.riskPerTrade
 
     // Garantir que o valor da ordem seja pelo menos o mínimo
     if tradeAmount < minOrderValue {

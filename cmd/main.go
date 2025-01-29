@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/casarotto/binance-bot/internal/config"
 	traderbot "github.com/casarotto/binance-bot/internal/trader-bot"
@@ -52,13 +53,19 @@ Você pode:
 	// Arquivo de histórico
 	historyFile := filepath.Join(historyDir, "trade_history.json")
 
+	// Ler o valor de RISK_PER_TRADE do ambiente
+	riskPerTrade, err := strconv.ParseFloat(os.Getenv("RISK_PER_TRADE"), 64)
+	if err != nil {
+		log.Fatalf("Erro ao converter RISK_PER_TRADE: %v", err)
+	}
+
 	// Criar o trader
 	trader := traderbot.NewBTCTrader(
-		cfg.ApiKey,
-		cfg.ApiSecret,
-		cfg.InitialFunds,
-		cfg.Testnet,
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_API_SECRET"),
+		os.Getenv("USE_TESTNET") == "true",
 		historyFile,
+		riskPerTrade,
 	)
 
 	// Configurar o logger do trader
