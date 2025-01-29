@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/adshao/go-binance/v2"
 	traderbot "github.com/casarotto/binance-bot/internal/trader-bot"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -85,6 +87,8 @@ type Model struct {
 	err         error
 	currentTab  int    // Nova variável para controlar a aba atual
 	showConfig  bool   // Controla se está mostrando a tela de configuração
+	ready       bool
+	lastUpdate  time.Time
 }
 
 func New(trader *traderbot.BTCTrader) *Model {
@@ -126,6 +130,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
 		tea.EnterAltScreen,
+		m.updateFunds,
 	)
 }
 
@@ -173,6 +178,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Atualizar dados a cada tick
 		m.updateData()
 		return m, tickCmd()
+
+	case tea.WindowSizeMsg:
+		// ... existing code ...
+	}
+
+	// Atualizar saldo a cada 5 segundos
+	if time.Since(m.lastUpdate) > 5*time.Second {
+		m.lastUpdate = time.Now()
+		return m, m.updateFunds
 	}
 
 	return m, nil
@@ -205,6 +219,11 @@ func (m *Model) updateData() {
 		}
 	}
 	m.table.SetRows(rows)
+}
+
+func (m Model) updateFunds() tea.Msg {
+	m.trader.UpdateTotalFunds()
+	return nil
 }
 
 // Funções auxiliares para formatação
@@ -325,6 +344,22 @@ func createBrailleChart(prices []float64, width, height int) string {
 }
 
 func (m Model) View() string {
+	var s strings.Builder
+
+	// Cabeçalho
+	s.WriteString("=== Bot de Trading BTC/USDT ===\n\n")
+
+	// Informações de saldo e risco
+	s.WriteString(fmt.Sprintf("💰 Saldo Total: $%.2f USDT\n", m.trader.GetTotalFunds()))
+	s.WriteString(fmt.Sprintf("📊 Risco por Trade: %.1f%% (próxima operação: $%.2f USDT)\n\n",
+		m.trader.GetRiskPerTrade()*100,
+		m.trader.GetNextTradeAmount()))
+
+	// Histórico de trades
+	s.WriteString("Histórico de Trades\n\n")
+	s.WriteString("Timestamp           Ação      Preço         Quantidade      Lucro/Perda\n")
+	s.WriteString("--------------------------------------------------------------------------------\n")
+
 	// Obter tamanho do terminal
 	width, height, _ := term.GetSize(int(os.Stdout.Fd()))
 
@@ -555,4 +590,14 @@ func (m Model) View() string {
 		content,
 		footer,
 	)
+}
+
+type Trader interface {
+	GetTrades() []traderbot.Trade
+	SetInitialPosition(inPosition bool, entryPrice float64)
+	GetClient() *binance.Client
+	GetRiskPerTrade() float64
+	GetTotalFunds() float64
+	UpdateTotalFunds() error
+	GetNextTradeAmount() float64
 } 

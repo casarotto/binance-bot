@@ -567,3 +567,28 @@ func (t *BTCTrader) SetInitialPosition(inPosition bool, entryPrice float64) {
 func (t *BTCTrader) GetClient() *binance.Client {
     return t.client
 }
+
+// GetRiskPerTrade retorna a porcentagem de risco por trade
+func (t *BTCTrader) GetRiskPerTrade() float64 {
+    return t.riskPerTrade
+}
+
+// GetTotalFunds retorna o total de fundos disponíveis
+func (t *BTCTrader) GetTotalFunds() float64 {
+    return t.funds
+}
+
+// UpdateTotalFunds atualiza o total de fundos disponíveis
+func (t *BTCTrader) UpdateTotalFunds() error {
+    _, usdtBalance, err := t.getBalances()
+    if err != nil {
+        return err
+    }
+    t.funds = usdtBalance
+    return nil
+}
+
+// GetNextTradeAmount retorna o valor que será usado na próxima operação
+func (t *BTCTrader) GetNextTradeAmount() float64 {
+    return t.funds * t.riskPerTrade
+}
